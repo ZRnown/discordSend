@@ -120,7 +120,7 @@ export default function AccountsPage() {
       return
     }
 
-    const waitForAccountsOnline = async (ids: number[], timeoutMs = 20000) => {
+    const waitForAccountsOnline = async (ids: number[], timeoutMs = 60000) => {
       const start = Date.now()
       let latest: Account[] = []
       while (Date.now() - start < timeoutMs) {
