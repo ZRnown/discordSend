@@ -37,17 +37,15 @@ jobs:
           pnpm install
 
       - name: Install Python dependencies
-        working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install -r backend/requirements.txt
           pip install pyinstaller
 
       - name: Build Python backend
-        working-directory: backend
         run: |
-          pyinstaller --onefile --name backend app.py
-          New-Item -ItemType Directory -Force ..\src-tauri\binaries
-          Copy-Item dist\backend.exe ..\src-tauri\binaries\backend-x86_64-pc-windows-msvc.exe
+          pyinstaller --onefile --name backend backend/app.py
+          New-Item -ItemType Directory -Force src-tauri\binaries
+          Copy-Item backend\dist\backend.exe src-tauri\binaries\backend-x86_64-pc-windows-msvc.exe
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -90,18 +88,16 @@ jobs:
           pnpm install
 
       - name: Install Python dependencies
-        working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install -r backend/requirements.txt
           pip install pyinstaller
 
       - name: Build Python backend
-        working-directory: backend
         run: |
-          pyinstaller --onefile --name backend app.py
-          mkdir -p ../src-tauri/binaries
-          cp dist/backend ../src-tauri/binaries/backend-aarch64-apple-darwin
-          chmod +x ../src-tauri/binaries/backend-aarch64-apple-darwin
+          pyinstaller --onefile --name backend backend/app.py
+          mkdir -p src-tauri/binaries
+          cp backend/dist/backend src-tauri/binaries/backend-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/backend-aarch64-apple-darwin
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
