@@ -9,9 +9,10 @@ Flask API 应用 - Discord 自动营销机器人系统
 import asyncio
 import threading
 import logging
+import re
 import requests
 import sqlite3
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -138,6 +139,25 @@ def fetch_discord_username(token: str) -> str:
         return username
     except Exception:
         return ''
+
+def _parse_channel_ids(value: object) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = re.split(r'[,\s]+', str(value))
+    channel_ids = []
+    seen = set()
+    for item in items:
+        channel_id = str(item).strip()
+        if not channel_id:
+            continue
+        if channel_id in seen:
+            continue
+        channel_ids.append(channel_id)
+        seen.add(channel_id)
+    return channel_ids
 
 def _get_account_by_token(token: str) -> Optional[Dict]:
     try:
@@ -450,14 +470,17 @@ def start_sender():
     try:
         data = request.get_json()
         shop_id = data.get('shopId')
-        channel_id = data.get('channelId')
+        channel_ids = data.get('channelIds')
+        if channel_ids is None:
+            channel_ids = data.get('channelId')
         account_ids = data.get('accountIds', [])
         interval = data.get('interval', config.DEFAULT_SEND_INTERVAL)
 
         # 参数验证
         if not shop_id:
             return jsonify({'success': False, 'error': '请选择店铺'}), 400
-        if not channel_id:
+        channel_ids = _parse_channel_ids(channel_ids)
+        if not channel_ids:
             return jsonify({'success': False, 'error': '请输入目标频道ID'}), 400
         if not account_ids:
             return jsonify({'success': False, 'error': '请选择至少一个账号'}), 400
@@ -467,7 +490,7 @@ def start_sender():
 
         result = start_sending_task(
             shop_id=int(shop_id),
-            channel_id=str(channel_id),
+            channel_ids=channel_ids,
             account_ids=[int(id) for id in account_ids],
             interval=int(interval),
             db=db,

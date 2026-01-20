@@ -153,6 +153,12 @@ export default function AutoSenderPage() {
     )
   }
 
+  const parseChannelIds = (value: string) =>
+    value
+      .split(/[\s,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+
   const allSelected =
     accounts.length > 0 && accounts.every((account) => selectedAccounts.includes(account.id))
 
@@ -177,6 +183,11 @@ export default function AutoSenderPage() {
       toast.error('请选择至少一个账号')
       return
     }
+    const channelIds = parseChannelIds(targetChannel)
+    if (channelIds.length === 0) {
+      toast.error('请输入目标频道 ID')
+      return
+    }
 
     setLoading(true)
     try {
@@ -185,7 +196,7 @@ export default function AutoSenderPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           shopId: selectedShop,
-          channelId: targetChannel,
+          channelIds,
           accountIds: selectedAccounts,
           interval: parseInt(sendInterval)
         })
@@ -306,14 +317,14 @@ export default function AutoSenderPage() {
             {/* 目标频道 */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                目标 Discord 频道 ID
+                目标 Discord 频道 ID（可多个，逗号或空格分隔）
               </label>
               <input
                 type="text"
                 value={targetChannel}
                 onChange={(e) => setTargetChannel(e.target.value)}
                 disabled={isRunning || isPaused}
-                placeholder="例如: 123456789012345678"
+                placeholder="例如: 123456789012345678, 234567890123456789"
                 className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
               />
             </div>

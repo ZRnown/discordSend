@@ -80,6 +80,25 @@ def _extract_item_id(product: Dict) -> str:
             return match.group(1)
     return ''
 
+def _normalize_channel_ids(value: object) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = re.split(r'[,\s]+', str(value))
+    normalized = []
+    seen = set()
+    for item in items:
+        channel_id = str(item).strip()
+        if not channel_id:
+            continue
+        if channel_id in seen:
+            continue
+        normalized.append(channel_id)
+        seen.add(channel_id)
+    return normalized
+
 def _persist_task_state(db) -> None:
     try:
         db.save_sender_task_state({
@@ -144,7 +163,7 @@ def load_task_state(db) -> None:
 
 async def auto_send_loop(
     shop_id: int,
-    target_channel_id: str,
+    target_channel_ids: List[str],
     selected_account_ids: List[int],
     interval: int,
     db,
@@ -156,7 +175,7 @@ async def auto_send_loop(
     自动发送循环任务
 
     :param shop_id: 选中的店铺ID（用于从数据库捞商品）
-    :param target_channel_id: 目标 Discord 频道 ID
+    :param target_channel_ids: 目标 Discord 频道 ID 列表
     :param selected_account_ids: 用户勾选的 Account ID 列表 [1, 2, 5]
     :param interval: 发送间隔（秒）
     :param db: 数据库实例
@@ -164,12 +183,11 @@ async def auto_send_loop(
     """
     global task_status
 
-    logger.info(f"启动自动发送: 店铺{shop_id} -> 频道{target_channel_id}，间隔{interval}s")
-
     task_status['is_running'] = True
     task_status['is_paused'] = False
     task_status['shop_id'] = shop_id
-    task_status['channel_id'] = target_channel_id
+    channel_ids = _normalize_channel_ids(target_channel_ids)
+    task_status['channel_id'] = ','.join(channel_ids)
     task_status['account_ids'] = selected_account_ids
     task_status['interval'] = interval
     task_status['started_at'] = datetime.now().isoformat()
@@ -178,7 +196,14 @@ async def auto_send_loop(
     task_status['next_account_index'] = max(0, start_account_index)
     _persist_task_state(db)
 
+    logger.info(f"启动自动发送: 店铺{shop_id} -> 频道{','.join(channel_ids)}，间隔{interval}s")
+
     try:
+        if not channel_ids:
+            task_status['error'] = "请输入目标频道ID"
+            logger.error(task_status['error'])
+            return
+
         # 1. 获取该店铺所有商品链接
         shop_info = db.get_shop_by_id(shop_id)
         if not shop_info:
@@ -254,23 +279,25 @@ async def auto_send_loop(
             _persist_task_state(db)
 
             try:
-                channel = current_bot.get_channel(int(target_channel_id))
-                if channel:
-                    await channel.send(message_content)
-                    task_status['sent_count'] += 1
-                    task_status['last_sent_at'] = datetime.now().isoformat()
-                    task_status['next_product_index'] = product_idx + 1
-                    task_status['next_account_index'] = bot_idx + 1
-                    _persist_task_state(db)
-                    logger.info(
-                        f"✅ 账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
-                        f"发送成功 ({task_status['sent_count']}/{task_status['total_products']}): {title[:30]}..."
-                    )
-                else:
-                    logger.error(
-                        f"账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
-                        f"找不到频道 {target_channel_id}"
-                    )
+                for channel_id in channel_ids:
+                    channel = current_bot.get_channel(int(channel_id))
+                    if channel:
+                        await channel.send(message_content)
+                    else:
+                        logger.error(
+                            f"账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
+                            f"找不到频道 {channel_id}"
+                        )
+
+                task_status['sent_count'] += 1
+                task_status['last_sent_at'] = datetime.now().isoformat()
+                task_status['next_product_index'] = product_idx + 1
+                task_status['next_account_index'] = bot_idx + 1
+                _persist_task_state(db)
+                logger.info(
+                    f"✅ 账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
+                    f"发送成功 ({task_status['sent_count']}/{task_status['total_products']}): {title[:30]}..."
+                )
             except Exception as e:
                 logger.error(f"发送失败: {e}")
                 # 继续下一条，不中断任务
@@ -310,7 +337,7 @@ async def auto_send_loop(
 
 def start_sending_task(
     shop_id: int,
-    channel_id: str,
+    channel_ids: List[str],
     account_ids: List[int],
     interval: int,
     db,
@@ -324,7 +351,7 @@ def start_sending_task(
     启动自动发送任务（从 Flask 线程调用）
 
     :param shop_id: 店铺 ID
-    :param channel_id: 目标频道 ID
+    :param channel_ids: 目标频道 ID 列表
     :param account_ids: 账号 ID 列表
     :param interval: 发送间隔（秒）
     :param db: 数据库实例
@@ -337,13 +364,20 @@ def start_sending_task(
     if task_status['is_running'] or (task_status['is_paused'] and not resume):
         return {'success': False, 'error': '已有任务正在运行或已暂停，请先停止或继续'}
 
+    normalized_channel_ids = _normalize_channel_ids(channel_ids)
+    if not normalized_channel_ids:
+        return {'success': False, 'error': '请输入目标频道ID'}
+
+    if not _has_online_bots(bot_clients, account_ids):
+        return {'success': False, 'error': '没有选中的账号在线，请先启动账号'}
+
     # 重置停止事件
     stop_sender_event.clear()
     global stop_sender_reason
     stop_sender_reason = None
     reset_task_status()
     task_status['shop_id'] = shop_id
-    task_status['channel_id'] = channel_id
+    task_status['channel_id'] = ','.join(normalized_channel_ids)
     task_status['account_ids'] = account_ids
     task_status['interval'] = interval
     task_status['next_product_index'] = max(0, start_product_index)
@@ -356,7 +390,7 @@ def start_sending_task(
         future = asyncio.run_coroutine_threadsafe(
             auto_send_loop(
                 shop_id=shop_id,
-                target_channel_id=channel_id,
+                target_channel_ids=normalized_channel_ids,
                 selected_account_ids=account_ids,
                 interval=interval,
                 db=db,
@@ -414,13 +448,17 @@ def resume_sending_task(db, bot_clients: List, bot_loop: asyncio.AbstractEventLo
     if task_status['is_running']:
         return {'success': False, 'error': '任务正在运行中'}
 
+    channel_ids = _normalize_channel_ids(state.get('channel_id'))
+    if not channel_ids:
+        return {'success': False, 'error': '没有可继续的任务'}
+
     account_ids = [int(item) for item in state.get('account_ids', [])]
     if not _has_online_bots(bot_clients, account_ids):
         return {'success': False, 'error': '没有选中的账号在线，请先启动账号'}
 
     return start_sending_task(
         shop_id=int(state['shop_id']),
-        channel_id=str(state['channel_id']),
+        channel_ids=channel_ids,
         account_ids=account_ids,
         interval=int(state.get('interval') or 60),
         db=db,
