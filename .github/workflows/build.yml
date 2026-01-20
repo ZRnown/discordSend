@@ -20,6 +20,11 @@ jobs:
           node-version: '20'
           cache: 'pnpm'
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '9'
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -30,7 +35,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          corepack enable
           pnpm install
 
       - name: Install Python dependencies
@@ -70,6 +74,11 @@ jobs:
           node-version: '20'
           cache: 'pnpm'
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '9'
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -80,7 +89,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          corepack enable
           pnpm install
 
       - name: Install Python dependencies
