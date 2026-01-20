@@ -48,7 +48,7 @@ jobs:
         run: |
           pyinstaller --onefile --name backend "$env:GITHUB_WORKSPACE\backend\app.py"
           New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\src-tauri\binaries"
-          Copy-Item "$env:GITHUB_WORKSPACE\backend\dist\backend.exe" "$env:GITHUB_WORKSPACE\src-tauri\binaries\backend-x86_64-pc-windows-msvc.exe"
+          Copy-Item "$env:GITHUB_WORKSPACE\dist\backend.exe" "$env:GITHUB_WORKSPACE\src-tauri\binaries\backend-x86_64-pc-windows-msvc.exe"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -102,7 +102,7 @@ jobs:
         run: |
           pyinstaller --onefile --name backend "$GITHUB_WORKSPACE/backend/app.py"
           mkdir -p "$GITHUB_WORKSPACE/src-tauri/binaries"
-          cp "$GITHUB_WORKSPACE/backend/dist/backend" "$GITHUB_WORKSPACE/src-tauri/binaries/backend-aarch64-apple-darwin"
+          cp "$GITHUB_WORKSPACE/dist/backend" "$GITHUB_WORKSPACE/src-tauri/binaries/backend-aarch64-apple-darwin"
           chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/backend-aarch64-apple-darwin"
 
       - name: Build Tauri app
