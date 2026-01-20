@@ -37,17 +37,17 @@ jobs:
           pnpm install
 
       - name: Install Python dependencies
+        working-directory: backend
         run: |
-          cd backend
           pip install -r requirements.txt
           pip install pyinstaller
 
       - name: Build Python backend
+        working-directory: backend
         run: |
-          cd backend
           pyinstaller --onefile --name backend app.py
-          mkdir -p ../src-tauri/binaries
-          copy dist\backend.exe ..\src-tauri\binaries\backend-x86_64-pc-windows-msvc.exe
+          New-Item -ItemType Directory -Force ..\src-tauri\binaries
+          Copy-Item dist\backend.exe ..\src-tauri\binaries\backend-x86_64-pc-windows-msvc.exe
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -90,14 +90,14 @@ jobs:
           pnpm install
 
       - name: Install Python dependencies
+        working-directory: backend
         run: |
-          cd backend
           pip install -r requirements.txt
           pip install pyinstaller
 
       - name: Build Python backend
+        working-directory: backend
         run: |
-          cd backend
           pyinstaller --onefile --name backend app.py
           mkdir -p ../src-tauri/binaries
           cp dist/backend ../src-tauri/binaries/backend-aarch64-apple-darwin
