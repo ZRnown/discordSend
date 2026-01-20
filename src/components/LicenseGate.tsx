@@ -9,14 +9,17 @@ interface LicenseGateProps {
 export default function LicenseGate({ onActivated }: LicenseGateProps) {
   const [licenseKey, setLicenseKey] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
 
   const handleActivate = async () => {
     const trimmedKey = licenseKey.trim()
     if (!trimmedKey) {
+      setErrorMessage('请输入许可证密钥')
       return
     }
 
     setSubmitting(true)
+    setErrorMessage('')
     try {
       const res = await fetch(`${API_BASE}/license/activate`, {
         method: 'POST',
@@ -26,8 +29,11 @@ export default function LicenseGate({ onActivated }: LicenseGateProps) {
       const data = await res.json()
       if (data.success) {
         await onActivated()
+      } else {
+        setErrorMessage(data.error || '密钥无效，请重试')
       }
     } catch (err) {
+      setErrorMessage('激活失败，请检查后端服务')
     } finally {
       setSubmitting(false)
     }
@@ -59,6 +65,7 @@ export default function LicenseGate({ onActivated }: LicenseGateProps) {
         >
           {submitting ? '激活中...' : '激活'}
         </button>
+        {errorMessage && <p className="text-sm text-red-600">{errorMessage}</p>}
       </div>
     </div>
   )
