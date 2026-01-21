@@ -304,6 +304,7 @@ class DiscordBotClient(discord.Client):
         attempt = 0
         while True:
             if self.stop_requested:
+                logger.info(f'账号 {self.account_id} 已请求停止，取消登录流程')
                 return
             if max_retries and attempt >= max_retries:
                 logger.error(f'账号 {self.account_id} 登录失败，已达到最大重试次数 {max_retries}')
@@ -321,7 +322,11 @@ class DiscordBotClient(discord.Client):
 
             attempt += 1
             self._reset_login_ready_event()
-            logger.info(f'账号 {self.account_id} 登录尝试 {attempt}/{max_retries}...')
+            attempt_started = time.monotonic()
+            logger.info(
+                f'账号 {self.account_id} 登录尝试 {attempt}/{max_retries} '
+                f'(超时 {timeout}s, 重试等待 {retry_delay}s)'
+            )
 
             login_task = asyncio.create_task(self._wait_for_login_ready())
             start_task = asyncio.create_task(self.start(token, reconnect=True))
@@ -331,12 +336,15 @@ class DiscordBotClient(discord.Client):
                 timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED
             )
+            elapsed = time.monotonic() - attempt_started
 
             if login_task in done:
                 try:
                     login_task.result()
                 except Exception as e:
                     logger.error(f'账号 {self.account_id} 登录事件异常: {e}')
+                else:
+                    logger.info(f'账号 {self.account_id} 登录成功，用时 {elapsed:.1f}s')
                 self.current_token = token
                 try:
                     await start_task
@@ -356,11 +364,13 @@ class DiscordBotClient(discord.Client):
                 except asyncio.CancelledError:
                     exc = None
                 if exc:
-                    logger.error(f'账号 {self.account_id} 登录失败: {exc}')
+                    logger.error(f'账号 {self.account_id} 登录失败，用时 {elapsed:.1f}s: {exc}')
                 else:
-                    logger.warning(f'账号 {self.account_id} 登录提前结束，准备重试')
+                    logger.warning(f'账号 {self.account_id} 登录提前结束，用时 {elapsed:.1f}s，准备重试')
             else:
-                logger.warning(f'账号 {self.account_id} 登录超时({timeout}s)，准备重试')
+                logger.warning(
+                    f'账号 {self.account_id} 登录超时({timeout}s)，已用 {elapsed:.1f}s，准备重试'
+                )
 
             if not start_task.done():
                 start_task.cancel()
@@ -386,6 +396,15 @@ class DiscordBotClient(discord.Client):
                 return
             if retry_delay:
                 await asyncio.sleep(retry_delay)
+
+    async def on_connect(self):
+        logger.info(f'账号 {self.account_id} 已连接到 Discord 网关')
+
+    async def on_disconnect(self):
+        logger.warning(f'账号 {self.account_id} 连接断开')
+
+    async def on_resumed(self):
+        logger.info(f'账号 {self.account_id} 连接已恢复')
 
     async def _refresh_channel_cache(self):
         """【新增】刷新频道白名单缓存（60秒TTL）
