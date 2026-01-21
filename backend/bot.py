@@ -281,6 +281,111 @@ class DiscordBotClient(discord.Client):
         self.user_id = user_id  # 用户ID，用于获取个性化设置
         self.user_shops = user_shops  # 用户管理的店铺列表
         self.role = role  # 'listener', 'sender', 'both' - 账号角色
+        self.stop_requested = False
+        self._login_ready_event = None
+        self.supervisor_task = None
+
+    def _reset_login_ready_event(self):
+        self._login_ready_event = asyncio.Event()
+
+    async def _wait_for_login_ready(self):
+        if self._login_ready_event is None:
+            self._reset_login_ready_event()
+        await self._login_ready_event.wait()
+
+    async def start_with_retries(self, token, max_retries=None, timeout=None, retry_delay=None):
+        if max_retries is None:
+            max_retries = config.ACCOUNT_LOGIN_RETRY_TIMES
+        if timeout is None:
+            timeout = config.ACCOUNT_LOGIN_TIMEOUT
+        if retry_delay is None:
+            retry_delay = config.ACCOUNT_LOGIN_RETRY_DELAY
+
+        attempt = 0
+        while True:
+            if self.stop_requested:
+                return
+            if max_retries and attempt >= max_retries:
+                logger.error(f'账号 {self.account_id} 登录失败，已达到最大重试次数 {max_retries}')
+                self.running = False
+                try:
+                    try:
+                        from database import db
+                    except ImportError:
+                        from .database import db
+                    if hasattr(self, 'account_id'):
+                        db.update_account_status(self.account_id, 'offline')
+                except Exception:
+                    pass
+                return
+
+            attempt += 1
+            self._reset_login_ready_event()
+            logger.info(f'账号 {self.account_id} 登录尝试 {attempt}/{max_retries}...')
+
+            login_task = asyncio.create_task(self._wait_for_login_ready())
+            start_task = asyncio.create_task(self.start(token, reconnect=True))
+
+            done, _pending = await asyncio.wait(
+                {login_task, start_task},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if login_task in done:
+                try:
+                    login_task.result()
+                except Exception as e:
+                    logger.error(f'账号 {self.account_id} 登录事件异常: {e}')
+                self.current_token = token
+                try:
+                    await start_task
+                except Exception as e:
+                    logger.error(f'账号 {self.account_id} 运行中断: {e}')
+                if self.stop_requested:
+                    return
+                logger.warning(f'账号 {self.account_id} 连接断开，准备重新登录...')
+                attempt = 0
+                if retry_delay:
+                    await asyncio.sleep(retry_delay)
+                continue
+
+            if start_task in done:
+                try:
+                    exc = start_task.exception()
+                except asyncio.CancelledError:
+                    exc = None
+                if exc:
+                    logger.error(f'账号 {self.account_id} 登录失败: {exc}')
+                else:
+                    logger.warning(f'账号 {self.account_id} 登录提前结束，准备重试')
+            else:
+                logger.warning(f'账号 {self.account_id} 登录超时({timeout}s)，准备重试')
+
+            if not start_task.done():
+                start_task.cancel()
+                try:
+                    await start_task
+                except Exception:
+                    pass
+
+            if not login_task.done():
+                login_task.cancel()
+                try:
+                    await login_task
+                except Exception:
+                    pass
+
+            try:
+                if not self.is_closed():
+                    await self.close()
+            except Exception:
+                pass
+
+            if self.stop_requested:
+                return
+            if retry_delay:
+                await asyncio.sleep(retry_delay)
 
     async def _refresh_channel_cache(self):
         """【新增】刷新频道白名单缓存（60秒TTL）
@@ -739,6 +844,8 @@ class DiscordBotClient(discord.Client):
         except Exception as e:
             logger.error(f'获取监听频道失败: {e}')
         self.running = True
+        if self._login_ready_event and not self._login_ready_event.is_set():
+            self._login_ready_event.set()
 
         # 更新数据库中的账号状态为在线
         try:

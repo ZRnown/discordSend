@@ -177,16 +177,19 @@ def _start_account_by_id(account_id: int) -> Dict:
     if not account:
         return {'success': False, 'error': '账号不存在'}
 
-    for client in bot_clients:
-        if client.account_id == account_id and not client.is_closed():
-            return {'success': False, 'error': '账号已在线'}
+    for client in list(bot_clients):
+        if client.account_id == account_id:
+            if not client.is_closed():
+                return {'success': False, 'error': '账号已在线'}
+            bot_clients.remove(client)
 
     client = DiscordBotClient(account_id=account_id)
     token = account['token']
+    client.stop_requested = False
 
     async def start_bot():
         try:
-            await client.start(token, reconnect=True)
+            await client.start_with_retries(token)
         except Exception as e:
             logger.error(f"账号 {account_id} 启动失败: {e}")
 
@@ -244,11 +247,11 @@ def delete_account(account_id):
     """删除账号"""
     try:
         # 先停止该账号的连接
-        for client in bot_clients:
+        for client in list(bot_clients):
             if client.account_id == account_id:
+                client.stop_requested = True
                 asyncio.run_coroutine_threadsafe(client.close(), bot_loop)
                 bot_clients.remove(client)
-                break
 
         db.delete_account(account_id)
         return jsonify({'success': True, 'message': '账号已删除'})
@@ -307,12 +310,17 @@ def start_all_accounts():
 def stop_account(account_id):
     """停止账号连接"""
     try:
-        for client in bot_clients:
+        stopped = False
+        for client in list(bot_clients):
             if client.account_id == account_id:
+                client.stop_requested = True
                 asyncio.run_coroutine_threadsafe(client.close(), bot_loop)
                 bot_clients.remove(client)
-                db.update_account_status(account_id, 'offline')
-                return jsonify({'success': True, 'message': '账号已停止'})
+                stopped = True
+
+        if stopped:
+            db.update_account_status(account_id, 'offline')
+            return jsonify({'success': True, 'message': '账号已停止'})
 
         return jsonify({'success': False, 'error': '账号未在线'}), 400
     except Exception as e:

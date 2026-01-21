@@ -40,6 +40,9 @@ class Config:
 
     # Discord 配置
     DISCORD_SIMILARITY_THRESHOLD = 0.6  # 图片相似度阈值
+    ACCOUNT_LOGIN_RETRY_TIMES = 3  # 账号登录重试次数
+    ACCOUNT_LOGIN_TIMEOUT = 60  # 单次登录超时（秒）
+    ACCOUNT_LOGIN_RETRY_DELAY = 5  # 登录失败后的重试等待（秒）
 
     # 下载配置
     DOWNLOAD_THREADS = 4  # 下载线程数
