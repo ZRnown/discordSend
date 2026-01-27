@@ -27,6 +27,8 @@ interface TaskStatus {
   started_at: string | null
   last_sent_at: string | null
   error: string | null
+  last_error?: string | null
+  last_error_at?: string | null
 }
 
 const API_BASE = 'http://127.0.0.1:5001/api'
@@ -271,6 +273,9 @@ export default function AutoSenderPage() {
 
   const isRunning = status?.is_running || false
   const isPaused = status?.is_paused || false
+  const lastErrorTime = status?.last_error_at
+    ? new Date(status.last_error_at).toLocaleString()
+    : null
 
   return (
     <div className="space-y-6">
@@ -475,6 +480,15 @@ export default function AutoSenderPage() {
           {status.error && (
             <div className="mt-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm">
               {status.error}
+            </div>
+          )}
+          {status.last_error && (
+            <div className="mt-4 p-3 bg-amber-50 text-amber-700 rounded-lg text-sm">
+              <div className="font-medium">最近异常</div>
+              <div className="mt-1">{status.last_error}</div>
+              {lastErrorTime && (
+                <div className="mt-1 text-xs text-amber-600">时间: {lastErrorTime}</div>
+              )}
             </div>
           )}
         </div>

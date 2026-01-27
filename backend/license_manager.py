@@ -11,18 +11,54 @@ import requests
 from config import config
 
 LICENSE_FILE = os.path.join(config.DATA_DIR, 'license.json')
+DEVICE_ID_FILE = os.path.join(config.DATA_DIR, 'device_id.txt')
+
+
+def _read_device_id() -> Optional[str]:
+    try:
+        with open(DEVICE_ID_FILE, 'r', encoding='utf-8') as f:
+            value = f.read().strip()
+        return value or None
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _save_device_id(value: str) -> bool:
+    try:
+        _ensure_data_dir()
+        with open(DEVICE_ID_FILE, 'w', encoding='utf-8') as f:
+            f.write(value)
+        return True
+    except Exception:
+        return False
 
 
 def generate_hwid() -> str:
     """生成稳定的硬件标识，用于许可证绑定。"""
+    cached = _read_device_id()
+    if cached:
+        return cached
+
+    license_data = load_license()
+    if license_data:
+        saved_hwid = str(license_data.get('hwid') or '').strip().upper()
+        if saved_hwid:
+            _save_device_id(saved_hwid)
+            return saved_hwid
+
     try:
         mac = ':'.join(
             ['{:02x}'.format((uuid.getnode() >> i) & 0xff) for i in range(0, 48, 8)]
         )[0:17]
         system_info = f"{platform.machine()}-{platform.system()}-{platform.node()}-{mac}"
-        return hashlib.sha256(system_info.encode()).hexdigest()[:32].upper()
+        hwid = hashlib.sha256(system_info.encode()).hexdigest()[:32].upper()
     except Exception:
-        return uuid.uuid4().hex[:32].upper()
+        hwid = uuid.uuid4().hex[:32].upper()
+
+    _save_device_id(hwid)
+    return hwid
 
 
 def _ensure_data_dir() -> None:

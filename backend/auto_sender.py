@@ -11,8 +11,11 @@
 import asyncio
 import logging
 import re
-from typing import List, Dict, Optional
+import discord
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,8 @@ task_status = {
     'started_at': None,
     'last_sent_at': None,
     'error': None,
+    'last_error': None,
+    'last_error_at': None,
     'next_product_index': 0,
     'next_account_index': 0
 }
@@ -61,9 +66,21 @@ def reset_task_status():
         'started_at': None,
         'last_sent_at': None,
         'error': None,
+        'last_error': None,
+        'last_error_at': None,
         'next_product_index': 0,
         'next_account_index': 0
     }
+
+
+def _set_last_error(message: str) -> None:
+    task_status['last_error'] = message
+    task_status['last_error_at'] = datetime.now().isoformat()
+
+
+def _format_exception(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or exc.__class__.__name__
 
 
 def _extract_item_id(product: Dict) -> str:
@@ -132,6 +149,72 @@ def _has_online_bots(bot_clients: List, account_ids: List[int]) -> bool:
         ):
             return True
     return False
+
+
+def _get_active_bots(bot_clients: List, account_ids: List[int]) -> List:
+    return [
+        client for client in bot_clients
+        if hasattr(client, 'account_id')
+        and client.account_id in account_ids
+        and client.is_ready()
+        and not client.is_closed()
+    ]
+
+
+async def _sleep_with_stop(timeout: float) -> bool:
+    if timeout <= 0:
+        return stop_sender_event.is_set()
+    try:
+        await asyncio.wait_for(stop_sender_event.wait(), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    if isinstance(exc, (discord.Forbidden, discord.NotFound)):
+        return False
+    if isinstance(exc, discord.HTTPException) and exc.status in (400, 401, 403, 404):
+        return False
+    return True
+
+
+async def _send_message_with_retries(
+    bot,
+    channel_id: str,
+    content: str,
+    max_retries: int,
+    retry_delay: float,
+    ready_timeout: float
+) -> Tuple[bool, Optional[str], bool]:
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except (TypeError, ValueError):
+        return False, f'频道ID无效: {channel_id}', False
+    if not channel:
+        return False, f'找不到频道 {channel_id}', False
+
+    attempt = 0
+    while True:
+        if stop_sender_event.is_set():
+            return False, '任务已停止', True
+        try:
+            if not bot.is_ready():
+                await asyncio.wait_for(bot.wait_until_ready(), timeout=ready_timeout)
+            await channel.send(content)
+            return True, None, False
+        except asyncio.TimeoutError:
+            error_message = f'等待账号就绪超时({ready_timeout}s)'
+            retryable = True
+        except Exception as exc:
+            error_message = _format_exception(exc)
+            retryable = _is_retryable_exception(exc)
+
+        if not retryable or attempt >= max_retries:
+            return False, error_message, retryable
+        attempt += 1
+        if await _sleep_with_stop(retry_delay):
+            return False, '任务已停止', True
 
 def load_task_state(db) -> None:
     """加载上次任务状态（用于恢复）"""
@@ -236,24 +319,18 @@ async def auto_send_loop(
             return
 
         # 2. 筛选出可用的在线 Bot 客户端
-        active_bots = [
-            client for client in bot_clients
-            if hasattr(client, 'account_id')
-            and client.account_id in selected_account_ids
-            and client.is_ready()
-            and not client.is_closed()
-        ]
-
+        active_bots = _get_active_bots(bot_clients, selected_account_ids)
         if not active_bots:
-            task_status['error'] = "没有选中的账号在线，请先启动账号"
-            logger.error(task_status['error'])
-            return
+            _set_last_error('没有选中的账号在线，等待自动重试')
 
         logger.info(f"可用账号数: {len(active_bots)}")
 
         product_idx = task_status['next_product_index']
         bot_idx = task_status['next_account_index']
         task_status['sent_count'] = product_idx
+        max_retries = max(0, int(config.AUTO_SEND_MAX_RETRIES))
+        retry_delay = max(1, int(config.AUTO_SEND_RETRY_DELAY))
+        ready_timeout = max(5, int(config.AUTO_SEND_READY_TIMEOUT))
 
         # 3. 循环发送
         while not stop_sender_event.is_set():
@@ -268,6 +345,16 @@ async def auto_send_loop(
             message_content = f"{title}\n{link_to_send}"
 
             # 获取当前轮换的账号 (Round Robin)
+            active_bots = _get_active_bots(bot_clients, selected_account_ids)
+            if not active_bots:
+                _set_last_error('没有选中的账号在线，等待自动重试')
+                task_status['current_account'] = None
+                _persist_task_state(db)
+                if await _sleep_with_stop(retry_delay):
+                    logger.info("收到停止信号，任务中断")
+                    break
+                continue
+
             current_bot = active_bots[bot_idx % len(active_bots)]
 
             task_status['current_product'] = _extract_item_id(product) or title[:50]
@@ -278,29 +365,60 @@ async def auto_send_loop(
             task_status['next_account_index'] = bot_idx
             _persist_task_state(db)
 
-            try:
-                for channel_id in channel_ids:
-                    channel = current_bot.get_channel(int(channel_id))
-                    if channel:
-                        await channel.send(message_content)
-                    else:
-                        logger.error(
-                            f"账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
-                            f"找不到频道 {channel_id}"
-                        )
-
-                task_status['sent_count'] += 1
-                task_status['last_sent_at'] = datetime.now().isoformat()
-                task_status['next_product_index'] = product_idx + 1
-                task_status['next_account_index'] = bot_idx + 1
-                _persist_task_state(db)
-                logger.info(
-                    f"✅ 账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
-                    f"发送成功 ({task_status['sent_count']}/{task_status['total_products']}): {title[:30]}..."
+            send_failures = []
+            send_success = 0
+            for channel_id in channel_ids:
+                success, error_message, retryable = await _send_message_with_retries(
+                    current_bot,
+                    channel_id,
+                    message_content,
+                    max_retries=max_retries,
+                    retry_delay=retry_delay,
+                    ready_timeout=ready_timeout
                 )
-            except Exception as e:
-                logger.error(f"发送失败: {e}")
-                # 继续下一条，不中断任务
+                if stop_sender_event.is_set():
+                    break
+                if success:
+                    send_success += 1
+                else:
+                    send_failures.append((channel_id, error_message or '发送失败', retryable))
+
+            if stop_sender_event.is_set():
+                logger.info("收到停止信号，任务中断")
+                break
+
+            if send_success == 0:
+                if send_failures and all(item[2] for item in send_failures):
+                    _set_last_error(f"发送失败，正在自动重试: {send_failures[0][1]}")
+                    _persist_task_state(db)
+                    if await _sleep_with_stop(retry_delay):
+                        logger.info("收到停止信号，任务中断")
+                        break
+                    continue
+                if send_failures:
+                    task_status['error'] = f"发送失败: {send_failures[0][1]}"
+                else:
+                    task_status['error'] = "发送失败: 未知原因"
+                logger.error(task_status['error'])
+                _persist_task_state(db)
+                break
+
+            if send_failures:
+                failure_detail = '; '.join(
+                    [f"{channel_id}: {message}" for channel_id, message, _ in send_failures[:3]]
+                )
+                _set_last_error(f"部分频道发送失败: {failure_detail}")
+                logger.warning(f"部分频道发送失败: {failure_detail}")
+
+            task_status['sent_count'] += 1
+            task_status['last_sent_at'] = datetime.now().isoformat()
+            task_status['next_product_index'] = product_idx + 1
+            task_status['next_account_index'] = bot_idx + 1
+            _persist_task_state(db)
+            logger.info(
+                f"✅ 账号 {current_bot.user.name if current_bot.user else 'Unknown'} "
+                f"发送成功 ({task_status['sent_count']}/{task_status['total_products']}): {title[:30]}..."
+            )
 
             # 索引递增
             product_idx += 1

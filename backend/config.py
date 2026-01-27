@@ -63,6 +63,9 @@ class Config:
     DEFAULT_SEND_INTERVAL = 60  # 默认发送间隔（秒）
     MIN_SEND_INTERVAL = 10  # 最小发送间隔（秒）
     MAX_SEND_INTERVAL = 3600  # 最大发送间隔（秒）
+    AUTO_SEND_MAX_RETRIES = 3  # 单条消息最大重试次数
+    AUTO_SEND_RETRY_DELAY = 5  # 发送失败重试等待（秒）
+    AUTO_SEND_READY_TIMEOUT = 30  # 等待账号就绪超时（秒）
 
     # 许可证激活服务配置
     LICENSE_SERVER_URL = "http://107.172.1.7:8888"
