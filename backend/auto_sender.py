@@ -144,7 +144,6 @@ def _has_online_bots(bot_clients: List, account_ids: List[int]) -> bool:
         if (
             hasattr(client, 'account_id')
             and client.account_id in account_ids
-            and client.is_ready()
             and not client.is_closed()
         ):
             return True
@@ -156,8 +155,20 @@ def _get_active_bots(bot_clients: List, account_ids: List[int]) -> List:
         client for client in bot_clients
         if hasattr(client, 'account_id')
         and client.account_id in account_ids
-        and client.is_ready()
         and not client.is_closed()
+    ]
+
+
+def _get_available_bots_for_channel(
+    bot_clients: List,
+    account_ids: List[int],
+    blocked_by_channel: Dict[str, set],
+    channel_id: str
+) -> List:
+    blocked_accounts = blocked_by_channel.get(channel_id, set())
+    return [
+        client for client in _get_active_bots(bot_clients, account_ids)
+        if getattr(client, 'account_id', None) not in blocked_accounts
     ]
 
 
@@ -331,6 +342,7 @@ async def auto_send_loop(
         max_retries = max(0, int(config.AUTO_SEND_MAX_RETRIES))
         retry_delay = max(1, int(config.AUTO_SEND_RETRY_DELAY))
         ready_timeout = max(5, int(config.AUTO_SEND_READY_TIMEOUT))
+        blocked_by_channel: Dict[str, set] = {}
 
         # 3. 循环发送
         while not stop_sender_event.is_set():
@@ -367,41 +379,85 @@ async def auto_send_loop(
 
             send_failures = []
             send_success = 0
+            channel_unavailable = 0
+            fatal_error_message = None
             for channel_id in channel_ids:
-                success, error_message, retryable = await _send_message_with_retries(
-                    current_bot,
-                    channel_id,
-                    message_content,
-                    max_retries=max_retries,
-                    retry_delay=retry_delay,
-                    ready_timeout=ready_timeout
+                available_bots = _get_available_bots_for_channel(
+                    bot_clients,
+                    selected_account_ids,
+                    blocked_by_channel,
+                    channel_id
                 )
-                if stop_sender_event.is_set():
+                if not available_bots:
+                    channel_unavailable += 1
+                    send_failures.append((channel_id, '没有可用账号发送该频道', False))
+                    continue
+
+                start_pos = bot_idx % len(available_bots)
+                channel_sent = False
+                channel_retryable_failure = False
+                last_error_message = None
+                for offset in range(len(available_bots)):
+                    bot = available_bots[(start_pos + offset) % len(available_bots)]
+                    success, error_message, retryable = await _send_message_with_retries(
+                        bot,
+                        channel_id,
+                        message_content,
+                        max_retries=max_retries,
+                        retry_delay=retry_delay,
+                        ready_timeout=ready_timeout
+                    )
+                    if stop_sender_event.is_set():
+                        break
+                    if success:
+                        channel_sent = True
+                        send_success += 1
+                        task_status['current_account'] = getattr(bot, 'user', None)
+                        if task_status['current_account']:
+                            task_status['current_account'] = str(task_status['current_account'])
+                        break
+
+                    last_error_message = error_message or '发送失败'
+                    if last_error_message.startswith('频道ID无效'):
+                        fatal_error_message = last_error_message
+                        break
+                    if retryable:
+                        channel_retryable_failure = True
+                    else:
+                        blocked_by_channel.setdefault(channel_id, set()).add(bot.account_id)
+
+                if stop_sender_event.is_set() or fatal_error_message:
                     break
-                if success:
-                    send_success += 1
-                else:
-                    send_failures.append((channel_id, error_message or '发送失败', retryable))
+
+                if not channel_sent:
+                    if channel_retryable_failure:
+                        send_failures.append((channel_id, last_error_message or '发送失败', True))
+                    else:
+                        channel_unavailable += 1
+                        send_failures.append((channel_id, last_error_message or '发送失败', False))
 
             if stop_sender_event.is_set():
                 logger.info("收到停止信号，任务中断")
                 break
-
-            if send_success == 0:
-                if send_failures and all(item[2] for item in send_failures):
-                    _set_last_error(f"发送失败，正在自动重试: {send_failures[0][1]}")
-                    _persist_task_state(db)
-                    if await _sleep_with_stop(retry_delay):
-                        logger.info("收到停止信号，任务中断")
-                        break
-                    continue
-                if send_failures:
-                    task_status['error'] = f"发送失败: {send_failures[0][1]}"
-                else:
-                    task_status['error'] = "发送失败: 未知原因"
+            if fatal_error_message:
+                task_status['error'] = fatal_error_message
                 logger.error(task_status['error'])
                 _persist_task_state(db)
                 break
+
+            if send_success == 0:
+                if channel_unavailable >= len(channel_ids):
+                    task_status['error'] = "所有账号都无法发送到目标频道，任务停止"
+                    logger.error(task_status['error'])
+                    _persist_task_state(db)
+                    break
+                if send_failures:
+                    _set_last_error(f"发送失败: {send_failures[0][1]}")
+                    _persist_task_state(db)
+                if await _sleep_with_stop(retry_delay):
+                    logger.info("收到停止信号，任务中断")
+                    break
+                continue
 
             if send_failures:
                 failure_detail = '; '.join(
